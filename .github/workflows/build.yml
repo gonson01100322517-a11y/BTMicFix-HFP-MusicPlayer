@@ -46,10 +46,7 @@ jobs:
       - name: Final source fixes
         run: |
           set -e
-          # Current ZIP: HomeScreen expects hfpMusicPlayer; SetupScreen does not.
-          python3 -c 'from pathlib import Path; p=Path("'"$PROJECT_DIR"'/app/src/main/java/com/btmicfix/MainActivity.kt"); s=p.read_text(); s=s.replace("hfpMusicPlayer = hfpMusicPlayer,\\n",""); s=s.replace("hfpMusicPlayer = hfpMusicPlayer,",""); needle="HomeScreen(\\n"; pos=s.find(needle); pos=s.find("audioRoutingManager = audioRoutingManager,",pos); pos=pos+len("audioRoutingManager = audioRoutingManager,"); s=s[:pos]+"\\n                            hfpMusicPlayer = hfpMusicPlayer,"+s[pos:]; p.write_text(s)'
           sed -i 's/(outputDevices.asList() + commDevices.asList())/(outputDevices.toList() + commDevices)/' "$PROJECT_DIR/app/src/main/java/com/btmicfix/audio/AudioRoutingManager.kt"
-
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: gradle --no-daemon --stacktrace assembleDebug
