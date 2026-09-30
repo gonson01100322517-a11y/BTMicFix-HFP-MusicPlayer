@@ -91,39 +91,10 @@ jobs:
               if imp not in text:
                   text = text.replace(anchor, anchor + imp + "\n", 1)
 
-          old_perm = '''    // Bluetooth permission state
-          var bluetoothPermissionGranted by remember {
-              mutableStateOf(
-                  context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
-                      android.content.pm.PackageManager.PERMISSION_GRANTED
-              )
-          }'''
-          new_perm = '''    // Android 12+: direct Bluetooth scan + connection permissions.
-          var bluetoothPermissionGranted by remember {
-              mutableStateOf(
-                  Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
-                      (context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
-                          android.content.pm.PackageManager.PERMISSION_GRANTED &&
-                       context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
-                          android.content.pm.PackageManager.PERMISSION_GRANTED)
-              )
-          }'''
-          if old_perm not in text:
-              text = re.sub(
-                  r'    // Bluetooth permission state.*?(?=    // Notification permission state)',
-                  new_perm + "\\n\\n",
-                  text,
-                  count=1,
-                  flags=re.S
-              )
-          else:
-              text = text.replace(old_perm, new_perm, 1)
+          p0 = text.index("    // Bluetooth permission state")
+          p1 = text.index("    // Notification permission state", p0)
+          text = text[:p0] + new_perm + "\n\n" + text[p1:]
 
-          old_launcher = '''    val btPermissionLauncher = rememberLauncherForActivityResult(
-              ActivityResultContracts.RequestPermission()
-          ) { granted ->
-              bluetoothPermissionGranted = granted
-          }'''
           new_launcher = '''    val btPermissionLauncher = rememberLauncherForActivityResult(
               ActivityResultContracts.RequestMultiplePermissions()
           ) { result ->
@@ -137,16 +108,9 @@ jobs:
                       android.content.pm.PackageManager.PERMISSION_GRANTED
               bluetoothPermissionGranted = connectOk && scanOk
           }'''
-          if old_launcher not in text:
-              text = re.sub(
-                  r'    val btPermissionLauncher = rememberLauncherForActivityResult\\(.*?\\n    \\}\\n\\n',
-                  new_launcher + "\\n\\n",
-                  text,
-                  count=1,
-                  flags=re.S
-              )
-          else:
-              text = text.replace(old_launcher, new_launcher, 1)
+          p0 = text.index("    val btPermissionLauncher = rememberLauncherForActivityResult")
+          p1 = text.index("    val notifPermissionLauncher = rememberLauncherForActivityResult", p0)
+          text = text[:p0] + new_launcher + "\n\n" + text[p1:]
 
           text = text.replace(
               'btPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)',
