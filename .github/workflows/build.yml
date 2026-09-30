@@ -46,7 +46,8 @@ jobs:
       - name: Final source fixes
         run: |
           set -e
-          sed -i '/hfpMusicPlayer = hfpMusicPlayer,/d' "$PROJECT_DIR/app/src/main/java/com/btmicfix/MainActivity.kt"
+          # The current project ZIP expects the HFP player parameter in SetupScreen.
+          sed -i '/audioRoutingManager = audioRoutingManager,/a\                            hfpMusicPlayer = hfpMusicPlayer,' "$PROJECT_DIR/app/src/main/java/com/btmicfix/MainActivity.kt"
           sed -i 's/(outputDevices.asList() + commDevices.asList())/(outputDevices.toList() + commDevices)/' "$PROJECT_DIR/app/src/main/java/com/btmicfix/audio/AudioRoutingManager.kt"
 
       - name: Build APK
