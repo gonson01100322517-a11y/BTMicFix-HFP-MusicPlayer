@@ -45,10 +45,11 @@ jobs:
           echo '--- BLUETOOTH/CDM MATCHES ---'
           grep -RniE 'CompanionDeviceManager|AssociationRequest|Choose a device to be managed|BLUETOOTH_SCAN|startDiscovery|BluetoothAdapter' "$PROJECT_DIR/app/src/main" || true
           echo '--- SETUP SCREEN ---'
-          FILE=$(grep -RIl 'Choose a device to be managed' "$PROJECT_DIR/app/src/main" | head -n 1 || true)
-          if [ -z "$FILE" ]; then FILE=$(grep -RIl 'CompanionDeviceManager\|AssociationRequest' "$PROJECT_DIR/app/src/main" | head -n 1 || true); fi
-          echo "SETUP_FILE=$FILE"
-          if [ -n "$FILE" ]; then nl -ba "$FILE" | sed -n '1,320p'; fi
+          echo '--- KOTLIN COMPANION MANAGER ---'
+          FILE="$PROJECT_DIR/app/src/main/java/com/btmicfix/companion/DeviceCompanionManager.kt"
+          if [ -f "$FILE" ]; then nl -ba "$FILE" | sed -n '1,240p'; fi
+          echo '--- SETUP SCREEN CANDIDATES ---'
+          find "$PROJECT_DIR/app/src/main" -type f \( -name '*Setup*Screen*.kt' -o -name '*Setup*.kt' \) -print -exec sh -c 'echo "--- $1 ---"; nl -ba "$1" | sed -n "1,360p"' _ {} \;
 
       - name: Patch Bluetooth HFP support
         run: |
