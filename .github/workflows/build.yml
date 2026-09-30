@@ -8,24 +8,24 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Extract project
+        shell: bash
         run: |
-          mkdir extracted
+          set -e
+          mkdir -p extracted
           unzip -q BTMicFix-HFP-MusicPlayer.zip -d extracted
-
-          PROJECT_DIR=$(find "$GITHUB_WORKSPACE/extracted" -name settings.gradle.kts -o -name settings.gradle | head -n 1)
-          PROJECT_DIR=$(dirname "$PROJECT_DIR")
-
+          SETTINGS=$(find "$GITHUB_WORKSPACE/extracted" -type f \( -name settings.gradle.kts -o -name settings.gradle \) | head -n 1)
+          test -n "$SETTINGS"
+          PROJECT_DIR=$(dirname "$SETTINGS")
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "Found project at: $PROJECT_DIR"
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
@@ -33,10 +33,13 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools'
+          packages: platform-tools
 
       - name: Install Android SDK packages
+        shell: bash
         run: |
+          set -e
+          yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
       - name: Set up Gradle
@@ -44,161 +47,156 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Patch Bluetooth HFP support
+      - name: Patch HFP routing
+        shell: bash
         run: |
+          set -e
           python3 - <<'PY'
           import os
           from pathlib import Path
 
           root = Path(os.environ["PROJECT_DIR"])
 
-          # Android 12+: allow access to connected/paired Bluetooth devices.
           manifest = root / "app/src/main/AndroidManifest.xml"
           s = manifest.read_text()
-          if 'android.permission.BLUETOOTH_SCAN' not in s:
-              s = s.replace(
-                  '<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />',
-                  '<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />\n'
-                  '    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />'
-              )
+          if "android.permission.BLUETOOTH_SCAN" not in s:
+              needle = '    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />'
+              s = s.replace(needle, needle + '\n    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />')
           manifest.write_text(s)
 
-          # The original app only queried availableCommunicationDevices.
-          # On many phones a connected speaker/headset initially appears as A2DP,
-          # so it was being hidden from the UI. Show connected Bluetooth outputs too,
-          # then request SCO/HFP when the user selects an A2DP device.
-          audio = root / "app/src/main/java/com/btmicfix/audio/AudioRoutingManager.kt"
-          a = audio.read_text()
+          setup = root / "app/src/main/java/com/btmicfix/ui/screens/SetupScreen.kt"
+          s = setup.read_text()
+          old_launcher = '''    val btPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        bluetoothPermissionGranted = granted
+    }'''
+          new_launcher = '''    val btPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        bluetoothPermissionGranted =
+            result[Manifest.permission.BLUETOOTH_CONNECT] == true &&
+            result[Manifest.permission.BLUETOOTH_SCAN] == true
+    }'''
+          s = s.replace(old_launcher, new_launcher)
+          s = s.replace(
+              'btPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)',
+              'btPermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN))'
+          )
+          old_check = '''context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED'''
+          new_check = '''context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED &&
+              context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED'''
+          s = s.replace(old_check, new_check)
+          setup.write_text(s)
 
-          if 'import android.os.Handler' not in a:
-              a = a.replace(
-                  'import android.media.AudioManager\n',
-                  'import android.media.AudioManager\nimport android.os.Handler\nimport android.os.Looper\n'
+          audio = root / "app/src/main/java/com/btmicfix/audio/AudioRoutingManager.kt"
+          s = audio.read_text()
+
+          if "import android.os.Handler" not in s:
+              s = s.replace(
+                  "import android.media.AudioManager\n",
+                  "import android.media.AudioManager\nimport android.os.Handler\nimport android.os.Looper\n"
               )
 
-          old_refresh = '''        val commDevices = audioManager.availableCommunicationDevices
-          val btDevices = commDevices
-              .filter { device ->
-                  device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                  device.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                  device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
-              }
-              .map { device ->
-                  BluetoothAudioDevice(
-                      deviceInfo = device,
-                      name = device.productName?.toString() ?: "Unknown BT Device",
-                      type = device.type,
-                      typeLabel = deviceTypeToString(device.type),
-                  )
-              }
+          start = s.index("    private fun refreshAvailableDevices() {")
+          end = s.index("\n    companion object", start)
+          new_refresh = '''    private fun refreshAvailableDevices() {
+        val outputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val commDevices = audioManager.availableCommunicationDevices
+
+        val btDevices = (outputDevices.asList() + commDevices.asList())
+            .distinctBy { it.id }
+            .filter { device ->
+                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                device.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                device.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
+            }
+            .map { device ->
+                BluetoothAudioDevice(
+                    deviceInfo = device,
+                    name = device.productName?.toString() ?: "Bluetooth Device",
+                    type = device.type,
+                    typeLabel = deviceTypeToString(device.type),
+                )
+            }
+
+        _availableDevices.value = btDevices
+        Logger.d("Available BT devices: \${btDevices.map { "\${it.name} (\${it.typeLabel})" }}")
+    }
 '''
-          new_refresh = '''        val outputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-          val commDevices = audioManager.availableCommunicationDevices
-          val btDevices = (outputDevices.asList() + commDevices)
-              .distinctBy { it.id }
-              .filter { device ->
-                  device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                  device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                  device.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                  device.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
-              }
-              .map { device ->
-                  BluetoothAudioDevice(
-                      deviceInfo = device,
-                      name = device.productName?.toString() ?: "Bluetooth Device",
-                      type = device.type,
-                      typeLabel = deviceTypeToString(device.type),
-                  )
-              }
+          s = s[:start] + new_refresh + s[end:]
+
+          marker = '''            // This is the magic call — it forces the system to select this device
+            // for communication audio, which triggers the SCO/HFP profile switch.
+            val success = audioManager.setCommunicationDevice(device)
 '''
-          if old_refresh in a:
-              a = a.replace(old_refresh, new_refresh)
+          replacement = '''            // If Android exposes the connected device as A2DP first,
+            // explicitly request the legacy SCO/HFP communication path.
+            if (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) {
+                Logger.i("A2DP device selected; requesting Bluetooth SCO/HFP")
+                @Suppress("DEPRECATION")
+                audioManager.startBluetoothSco()
 
-          old_route = '''            // This is the magic call — it forces the system to select this device
-              // for communication audio, which triggers the SCO/HFP profile switch.
-              val success = audioManager.setCommunicationDevice(device)
+                Handler(Looper.getMainLooper()).postDelayed({
+                    try {
+                        val sco = audioManager.availableCommunicationDevices.firstOrNull {
+                            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                            it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+                        }
+                        if (sco != null && audioManager.setCommunicationDevice(sco)) {
+                            currentRoutedDevice = sco
+                            _routingState.value = RoutingState.Active(deviceName)
+                            Logger.i("✓ HFP/SCO routing active: $deviceName")
+                        } else {
+                            _routingState.value = RoutingState.Failed(
+                                "Bluetooth HFP/SCO device did not become available"
+                            )
+                            Logger.w("No Bluetooth SCO device appeared after requesting SCO")
+                        }
+                    } catch (e: Exception) {
+                        _routingState.value = RoutingState.Failed(
+                            e.message ?: "Unknown HFP error"
+                        )
+                        Logger.e("✗ Exception while activating HFP/SCO", e)
+                    }
+                }, 1500L)
 
-              if (success) {
+                return RoutingState.Routing(deviceName)
+            }
+
+            // Devices already exposed for communication can be selected directly.
+            val success = audioManager.setCommunicationDevice(device)
 '''
-          new_route = '''            // A connected device may initially be exposed only as A2DP.
-              // Ask Android to bring up the Bluetooth SCO/HFP communication path first.
-              if (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) {
-                  Logger.i("A2DP device selected; requesting Bluetooth SCO/HFP")
-                  @Suppress("DEPRECATION")
-                  audioManager.startBluetoothSco()
-
-                  Handler(Looper.getMainLooper()).postDelayed({
-                      try {
-                          val sco = audioManager.availableCommunicationDevices.firstOrNull {
-                              it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                              it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
-                          }
-                          if (sco != null) {
-                              val ok = audioManager.setCommunicationDevice(sco)
-                              if (ok) {
-                                  currentRoutedDevice = sco
-                                  _routingState.value = RoutingState.Active(deviceName)
-                                  Logger.i("✓ HFP/SCO routing active: $deviceName")
-                              } else {
-                                  _routingState.value = RoutingState.Failed("Android could not select the Bluetooth HFP device")
-                                  Logger.e("✗ setCommunicationDevice failed after SCO request")
-                              }
-                          } else {
-                              _routingState.value = RoutingState.Failed("Bluetooth HFP/SCO device did not become available")
-                              Logger.w("No Bluetooth SCO device appeared after requesting SCO")
-                          }
-                      } catch (e: Exception) {
-                          _routingState.value = RoutingState.Failed(e.message ?: "Unknown HFP error")
-                          Logger.e("✗ Exception while activating HFP/SCO", e)
-                      }
-                  }, 1500L)
-
-                  return RoutingState.Routing(deviceName)
-              }
-
-              // For devices already exposed as a communication device, select it directly.
-              val success = audioManager.setCommunicationDevice(device)
-
-              if (success) {
-'''
-          if old_route in a:
-              a = a.replace(old_route, new_route)
-
-          audio.write_text(a)
-
-          # Keep the earlier compile fix.
-          main = root / "app/src/main/java/com/btmicfix/MainActivity.kt"
-          m = main.read_text()
-          m = m.replace('                            hfpMusicPlayer = hfpMusicPlayer,\n', '')
-          main.write_text(m)
-
-          print("=== Manifest Bluetooth permissions ===")
-          for line in manifest.read_text().splitlines():
-              if "BLUETOOTH_" in line:
-                  print(line)
-          print("=== Audio manager Bluetooth logic patched ===")
-          print("=== MainActivity compile fix retained ===")
+          if marker in s:
+              s = s.replace(marker, replacement)
+          audio.write_text(s)
+          print("HFP patch applied")
           PY
+
       - name: Validate patched source
+        shell: bash
         run: |
-          echo "=== Bluetooth permission lines ==="
-          grep -n "BLUETOOTH_" "$PROJECT_DIR/app/src/main/AndroidManifest.xml" || true
-          echo "=== Device discovery code ==="
-          grep -n "getDevices\|availableCommunicationDevices\|startBluetoothSco" "$PROJECT_DIR/app/src/main/java/com/btmicfix/audio/AudioRoutingManager.kt" || true
+          set -e
+          grep -n "BLUETOOTH_" "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+          grep -n "getDevices\|availableCommunicationDevices\|startBluetoothSco\|setCommunicationDevice" "$PROJECT_DIR/app/src/main/java/com/btmicfix/audio/AudioRoutingManager.kt"
 
       - name: Build APK
-        working-directory: ${{ env.PROJECT_DIR }}
+        working-directory: \${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
-          gradle --no-daemon assembleDebug
+          set -e
+          gradle --no-daemon --stacktrace assembleDebug
 
       - name: Locate APK
+        shell: bash
         run: |
-          APK=$(find "$PROJECT_DIR/app/build_tmp" -type f -name "*.apk" | head -n 1)
-          if [ -z "$APK" ]; then
-            echo "No APK found"
-            find "$PROJECT_DIR/app/build_tmp" -type f | head -n 100
-            exit 1
-          fi
+          set -e
+          APK=$(find "$PROJECT_DIR/app" -type f -name "*.apk" | head -n 1)
+          test -n "$APK"
           echo "APK found: $APK"
           cp "$APK" "$GITHUB_WORKSPACE/HFP-MusicPlayer.apk"
 
