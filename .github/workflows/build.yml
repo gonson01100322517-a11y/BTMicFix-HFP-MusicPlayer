@@ -109,8 +109,15 @@ jobs:
               )
           }'''
           if old_perm not in text:
-              raise SystemExit("Bluetooth permission block not found")
-          text = text.replace(old_perm, new_perm, 1)
+              text = re.sub(
+                  r'    // Bluetooth permission state.*?(?=    // Notification permission state)',
+                  new_perm + "\\n\\n",
+                  text,
+                  count=1,
+                  flags=re.S
+              )
+          else:
+              text = text.replace(old_perm, new_perm, 1)
 
           old_launcher = '''    val btPermissionLauncher = rememberLauncherForActivityResult(
               ActivityResultContracts.RequestPermission()
@@ -131,8 +138,15 @@ jobs:
               bluetoothPermissionGranted = connectOk && scanOk
           }'''
           if old_launcher not in text:
-              raise SystemExit("Bluetooth launcher block not found")
-          text = text.replace(old_launcher, new_launcher, 1)
+              text = re.sub(
+                  r'    val btPermissionLauncher = rememberLauncherForActivityResult\\(.*?\\n    \\}\\n\\n',
+                  new_launcher + "\\n\\n",
+                  text,
+                  count=1,
+                  flags=re.S
+              )
+          else:
+              text = text.replace(old_launcher, new_launcher, 1)
 
           text = text.replace(
               'btPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)',
