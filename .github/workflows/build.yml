@@ -9,11 +9,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Extract project
-        shell: bash
         run: |
           set -e
           mkdir -p extracted
@@ -22,186 +20,41 @@ jobs:
           test -n "$SETTINGS"
           PROJECT_DIR=$(dirname "$SETTINGS")
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Found project at: $PROJECT_DIR"
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
+      - uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
 
-      - name: Install Android SDK packages
-        shell: bash
+      - name: Install Android SDK
         run: |
-          set -e
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Patch HFP routing
-        shell: bash
+      - name: Patch Bluetooth HFP support
         run: |
-          set -e
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          root = Path(os.environ["PROJECT_DIR"])
-
-          manifest = root / "app/src/main/AndroidManifest.xml"
-          s = manifest.read_text()
-          if "android.permission.BLUETOOTH_SCAN" not in s:
-              needle = '    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />'
-              s = s.replace(needle, needle + '\n    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />')
-          manifest.write_text(s)
-
-          setup = root / "app/src/main/java/com/btmicfix/ui/screens/SetupScreen.kt"
-          s = setup.read_text()
-          old_launcher = '''    val btPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        bluetoothPermissionGranted = granted
-    }'''
-          new_launcher = '''    val btPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { result ->
-        bluetoothPermissionGranted =
-            result[Manifest.permission.BLUETOOTH_CONNECT] == true &&
-            result[Manifest.permission.BLUETOOTH_SCAN] == true
-    }'''
-          s = s.replace(old_launcher, new_launcher)
-          s = s.replace(
-              'btPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)',
-              'btPermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN))'
-          )
-          old_check = '''context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
-                android.content.pm.PackageManager.PERMISSION_GRANTED'''
-          new_check = '''context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
-                android.content.pm.PackageManager.PERMISSION_GRANTED &&
-              context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
-                android.content.pm.PackageManager.PERMISSION_GRANTED'''
-          s = s.replace(old_check, new_check)
-          setup.write_text(s)
-
-          audio = root / "app/src/main/java/com/btmicfix/audio/AudioRoutingManager.kt"
-          s = audio.read_text()
-
-          if "import android.os.Handler" not in s:
-              s = s.replace(
-                  "import android.media.AudioManager\n",
-                  "import android.media.AudioManager\nimport android.os.Handler\nimport android.os.Looper\n"
-              )
-
-          start = s.index("    private fun refreshAvailableDevices() {")
-          end = s.index("\n    companion object", start)
-          new_refresh = '''    private fun refreshAvailableDevices() {
-        val outputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-        val commDevices = audioManager.availableCommunicationDevices
-
-        val btDevices = (outputDevices.asList() + commDevices.asList())
-            .distinctBy { it.id }
-            .filter { device ->
-                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                device.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                device.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
-            }
-            .map { device ->
-                BluetoothAudioDevice(
-                    deviceInfo = device,
-                    name = device.productName?.toString() ?: "Bluetooth Device",
-                    type = device.type,
-                    typeLabel = deviceTypeToString(device.type),
-                )
-            }
-
-        _availableDevices.value = btDevices
-        Logger.d("Available BT devices: ${btDevices.map { "${it.name} (${it.typeLabel})" }}")
-    }
-'''
-          s = s[:start] + new_refresh + s[end:]
-
-          marker = '''            // This is the magic call — it forces the system to select this device
-            // for communication audio, which triggers the SCO/HFP profile switch.
-            val success = audioManager.setCommunicationDevice(device)
-'''
-          replacement = '''            // If Android exposes the connected device as A2DP first,
-            // explicitly request the legacy SCO/HFP communication path.
-            if (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) {
-                Logger.i("A2DP device selected; requesting Bluetooth SCO/HFP")
-                @Suppress("DEPRECATION")
-                audioManager.startBluetoothSco()
-
-                Handler(Looper.getMainLooper()).postDelayed({
-                    try {
-                        val sco = audioManager.availableCommunicationDevices.firstOrNull {
-                            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                            it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
-                        }
-                        if (sco != null && audioManager.setCommunicationDevice(sco)) {
-                            currentRoutedDevice = sco
-                            _routingState.value = RoutingState.Active(deviceName)
-                            Logger.i("✓ HFP/SCO routing active: $deviceName")
-                        } else {
-                            _routingState.value = RoutingState.Failed(
-                                "Bluetooth HFP/SCO device did not become available"
-                            )
-                            Logger.w("No Bluetooth SCO device appeared after requesting SCO")
-                        }
-                    } catch (e: Exception) {
-                        _routingState.value = RoutingState.Failed(
-                            e.message ?: "Unknown HFP error"
-                        )
-                        Logger.e("✗ Exception while activating HFP/SCO", e)
-                    }
-                }, 1500L)
-
-                return RoutingState.Routing(deviceName)
-            }
-
-            // Devices already exposed for communication can be selected directly.
-            val success = audioManager.setCommunicationDevice(device)
-'''
-          if marker in s:
-              s = s.replace(marker, replacement)
-          audio.write_text(s)
-          print("HFP patch applied")
-          PY
-
-      - name: Validate patched source
-        shell: bash
-        run: |
-          set -e
-          grep -n "BLUETOOTH_" "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
-          grep -n "getDevices\|availableCommunicationDevices\|startBluetoothSco\|setCommunicationDevice" "$PROJECT_DIR/app/src/main/java/com/btmicfix/audio/AudioRoutingManager.kt"
+          echo 'CmltcG9ydCBvcwpmcm9tIHBhdGhsaWIgaW1wb3J0IFBhdGgKcm9vdCA9IFBhdGgob3MuZW52aXJvblsiUFJPSkVDVF9ESVIiXSkKCm1hbmlmZXN0ID0gcm9vdCAvICJhcHAvc3JjL21haW4vQW5kcm9pZE1hbmlmZXN0LnhtbCIKcyA9IG1hbmlmZXN0LnJlYWRfdGV4dCgpCmlmICJhbmRyb2lkLnBlcm1pc3Npb24uQkxVRVRPT1RIX1NDQU4iIG5vdCBpbiBzOgogICAgcyA9IHMucmVwbGFjZSgKICAgICAgICAnICAgIDx1c2VzLXBlcm1pc3Npb24gYW5kcm9pZDpuYW1lPSJhbmRyb2lkLnBlcm1pc3Npb24uQkxVRVRPT1RIX0NPTk5FQ1QiIC8+JywKICAgICAgICAnICAgIDx1c2VzLXBlcm1pc3Npb24gYW5kcm9pZDpuYW1lPSJhbmRyb2lkLnBlcm1pc3Npb24uQkxVRVRPT1RIX0NPTk5FQ1QiIC8+XG4nCiAgICAgICAgJyAgICA8dXNlcy1wZXJtaXNzaW9uIGFuZHJvaWQ6bmFtZT0iYW5kcm9pZC5wZXJtaXNzaW9uLkJMVUVUT09USF9TQ0FOIiAvPicKICAgICkKbWFuaWZlc3Qud3JpdGVfdGV4dChzKQoKc2V0dXAgPSByb290IC8gImFwcC9zcmMvbWFpbi9qYXZhL2NvbS9idG1pY2ZpeC91aS9zY3JlZW5zL1NldHVwU2NyZWVuLmt0IgpzID0gc2V0dXAucmVhZF90ZXh0KCkKb2xkX2xhdW5jaGVyID0gJycnICAgIHZhbCBidFBlcm1pc3Npb25MYXVuY2hlciA9IHJlbWVtYmVyTGF1bmNoZXJGb3JBY3Rpdml0eVJlc3VsdCgKICAgICAgICBBY3Rpdml0eVJlc3VsdENvbnRyYWN0cy5SZXF1ZXN0UGVybWlzc2lvbigpCiAgICApIHsgZ3JhbnRlZCAtPgogICAgICAgIGJsdWV0b290aFBlcm1pc3Npb25HcmFudGVkID0gZ3JhbnRlZAogICAgfScnJwpuZXdfbGF1bmNoZXIgPSAnJycgICAgdmFsIGJ0UGVybWlzc2lvbkxhdW5jaGVyID0gcmVtZW1iZXJMYXVuY2hlckZvckFjdGl2aXR5UmVzdWx0KAogICAgICAgIEFjdGl2aXR5UmVzdWx0Q29udHJhY3RzLlJlcXVlc3RNdWx0aXBsZVBlcm1pc3Npb25zKCkKICAgICkgeyByZXN1bHQgLT4KICAgICAgICBibHVldG9vdGhQZXJtaXNzaW9uR3JhbnRlZCA9CiAgICAgICAgICAgIHJlc3VsdFtNYW5pZmVzdC5wZXJtaXNzaW9uLkJMVUVUT09USF9DT05ORUNUXSA9PSB0cnVlICYmCiAgICAgICAgICAgIHJlc3VsdFtNYW5pZmVzdC5wZXJtaXNzaW9uLkJMVUVUT09USF9TQ0FOXSA9PSB0cnVlCiAgICB9JycnCnMgPSBzLnJlcGxhY2Uob2xkX2xhdW5jaGVyLCBuZXdfbGF1bmNoZXIpCnMgPSBzLnJlcGxhY2UoCiAgICAnYnRQZXJtaXNzaW9uTGF1bmNoZXIubGF1bmNoKE1hbmlmZXN0LnBlcm1pc3Npb24uQkxVRVRPT1RIX0NPTk5FQ1QpJywKICAgICdidFBlcm1pc3Npb25MYXVuY2hlci5sYXVuY2goYXJyYXlPZihNYW5pZmVzdC5wZXJtaXNzaW9uLkJMVUVUT09USF9DT05ORUNULCBNYW5pZmVzdC5wZXJtaXNzaW9uLkJMVUVUT09USF9TQ0FOKSknCikKb2xkX2NoZWNrID0gJycnY29udGV4dC5jaGVja1NlbGZQZXJtaXNzaW9uKE1hbmlmZXN0LnBlcm1pc3Npb24uQkxVRVRPT1RIX0NPTk5FQ1QpID09CiAgICAgICAgICAgICAgICBhbmRyb2lkLmNvbnRlbnQucG0uUGFja2FnZU1hbmFnZXIuUEVSTUlTU0lPTl9HUkFOVEVEJycnCm5ld19jaGVjayA9ICcnJ2NvbnRleHQuY2hlY2tTZWxmUGVybWlzc2lvbihNYW5pZmVzdC5wZXJtaXNzaW9uLkJMVUVUT09USF9DT05ORUNUKSA9PQogICAgICAgICAgICAgICAgYW5kcm9pZC5jb250ZW50LnBtLlBhY2thZ2VNYW5hZ2VyLlBFUk1JU1NJT05fR1JBTlRFRCAmJgogICAgICAgICAgICBjb250ZXh0LmNoZWNrU2VsZlBlcm1pc3Npb24oTWFuaWZlc3QucGVybWlzc2lvbi5CTFVFVE9PVEhfU0NBTikgPT0KICAgICAgICAgICAgICAgIGFuZHJvaWQuY29udGVudC5wbS5QYWNrYWdlTWFuYWdlci5QRVJNSVNTSU9OX0dSQU5URUQnJycKcyA9IHMucmVwbGFjZShvbGRfY2hlY2ssIG5ld19jaGVjaykKc2V0dXAud3JpdGVfdGV4dChzKQoKYXVkaW8gPSByb290IC8gImFwcC9zcmMvbWFpbi9qYXZhL2NvbS9idG1pY2ZpeC9hdWRpby9BdWRpb1JvdXRpbmdNYW5hZ2VyLmt0IgpzID0gYXVkaW8ucmVhZF90ZXh0KCkKaWYgImltcG9ydCBhbmRyb2lkLm9zLkhhbmRsZXIiIG5vdCBpbiBzOgogICAgcyA9IHMucmVwbGFjZSgKICAgICAgICAiaW1wb3J0IGFuZHJvaWQubWVkaWEuQXVkaW9NYW5hZ2VyXG4iLAogICAgICAgICJpbXBvcnQgYW5kcm9pZC5tZWRpYS5BdWRpb01hbmFnZXJcbmltcG9ydCBhbmRyb2lkLm9zLkhhbmRsZXJcbmltcG9ydCBhbmRyb2lkLm9zLkxvb3BlclxuIgogICAgKQoKc3RhcnQgPSBzLmluZGV4KCIgICAgcHJpdmF0ZSBmdW4gcmVmcmVzaEF2YWlsYWJsZURldmljZXMoKSB7IikKZW5kID0gcy5pbmRleCgiXG4gICAgY29tcGFuaW9uIG9iamVjdCIsIHN0YXJ0KQpuZXdfcmVmcmVzaCA9ICcnJyAgICBwcml2YXRlIGZ1biByZWZyZXNoQXZhaWxhYmxlRGV2aWNlcygpIHsKICAgICAgICB2YWwgb3V0cHV0RGV2aWNlcyA9IGF1ZGlvTWFuYWdlci5nZXREZXZpY2VzKEF1ZGlvTWFuYWdlci5HRVRfREVWSUNFU19PVVRQVVRTKQogICAgICAgIHZhbCBjb21tRGV2aWNlcyA9IGF1ZGlvTWFuYWdlci5hdmFpbGFibGVDb21tdW5pY2F0aW9uRGV2aWNlcwogICAgICAgIHZhbCBidERldmljZXMgPSAob3V0cHV0RGV2aWNlcy5hc0xpc3QoKSArIGNvbW1EZXZpY2VzLmFzTGlzdCgpKQogICAgICAgICAgICAuZGlzdGluY3RCeSB7IGl0LmlkIH0KICAgICAgICAgICAgLmZpbHRlciB7IGRldmljZSAtPgogICAgICAgICAgICAgICAgZGV2aWNlLnR5cGUgPT0gQXVkaW9EZXZpY2VJbmZvLlRZUEVfQkxVRVRPT1RIX1NDTyB8fAogICAgICAgICAgICAgICAgZGV2aWNlLnR5cGUgPT0gQXVkaW9EZXZpY2VJbmZvLlRZUEVfQkxVRVRPT1RIX0EyRFAgfHwKICAgICAgICAgICAgICAgIGRldmljZS50eXBlID09IEF1ZGlvRGV2aWNlSW5mby5UWVBFX0JMRV9IRUFEU0VUIHx8CiAgICAgICAgICAgICAgICBkZXZpY2UudHlwZSA9PSBBdWRpb0RldmljZUluZm8uVFlQRV9CTEVfU1BFQUtFUgogICAgICAgICAgICB9CiAgICAgICAgICAgIC5tYXAgeyBkZXZpY2UgLT4KICAgICAgICAgICAgICAgIEJsdWV0b290aEF1ZGlvRGV2aWNlKAogICAgICAgICAgICAgICAgICAgIGRldmljZUluZm8gPSBkZXZpY2UsCiAgICAgICAgICAgICAgICAgICAgbmFtZSA9IGRldmljZS5wcm9kdWN0TmFtZT8udG9TdHJpbmcoKSA/OiAiQmx1ZXRvb3RoIERldmljZSIsCiAgICAgICAgICAgICAgICAgICAgdHlwZSA9IGRldmljZS50eXBlLAogICAgICAgICAgICAgICAgICAgIHR5cGVMYWJlbCA9IGRldmljZVR5cGVUb1N0cmluZyhkZXZpY2UudHlwZSksCiAgICAgICAgICAgICAgICApCiAgICAgICAgICAgIH0KICAgICAgICBfYXZhaWxhYmxlRGV2aWNlcy52YWx1ZSA9IGJ0RGV2aWNlcwogICAgICAgIExvZ2dlci5kKCJBdmFpbGFibGUgQlQgZGV2aWNlczogJHtidERldmljZXMubWFwIHsgIiR7aXQubmFtZX0gKCR7aXQudHlwZUxhYmVsfSkiIH19IikKICAgIH0KJycnCnMgPSBzWzpzdGFydF0gKyBuZXdfcmVmcmVzaCArIHNbZW5kOl0KCm1hcmtlciA9ICcnJyAgICAgICAgICAgIC8vIFRoaXMgaXMgdGhlIG1hZ2ljIGNhbGwg4oCUIGl0IGZvcmNlcyB0aGUgc3lzdGVtIHRvIHNlbGVjdCB0aGlzIGRldmljZQogICAgICAgICAgICAvLyBmb3IgY29tbXVuaWNhdGlvbiBhdWRpbywgd2hpY2ggdHJpZ2dlcnMgdGhlIFNDTy9IRlAgcHJvZmlsZSBzd2l0Y2guCiAgICAgICAgICAgIHZhbCBzdWNjZXNzID0gYXVkaW9NYW5hZ2VyLnNldENvbW11bmljYXRpb25EZXZpY2UoZGV2aWNlKQonJycKcmVwbGFjZW1lbnQgPSAnJycgICAgICAgICAgICBpZiAoZGV2aWNlLnR5cGUgPT0gQXVkaW9EZXZpY2VJbmZvLlRZUEVfQkxVRVRPT1RIX0EyRFApIHsKICAgICAgICAgICAgICAgIExvZ2dlci5pKCJBMkRQIGRldmljZSBzZWxlY3RlZDsgcmVxdWVzdGluZyBCbHVldG9vdGggU0NPL0hGUCIpCiAgICAgICAgICAgICAgICBAU3VwcHJlc3MoIkRFUFJFQ0FUSU9OIikKICAgICAgICAgICAgICAgIGF1ZGlvTWFuYWdlci5zdGFydEJsdWV0b290aFNjbygpCiAgICAgICAgICAgICAgICBIYW5kbGVyKExvb3Blci5nZXRNYWluTG9vcGVyKCkpLnBvc3REZWxheWVkKHsKICAgICAgICAgICAgICAgICAgICB0cnkgewogICAgICAgICAgICAgICAgICAgICAgICB2YWwgc2NvID0gYXVkaW9NYW5hZ2VyLmF2YWlsYWJsZUNvbW11bmljYXRpb25EZXZpY2VzLmZpcnN0T3JOdWxsIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGl0LnR5cGUgPT0gQXVkaW9EZXZpY2VJbmZvLlRZUEVfQkxVRVRPT1RIX1NDTyB8fAogICAgICAgICAgICAgICAgICAgICAgICAgICAgaXQudHlwZSA9PSBBdWRpb0RldmljZUluZm8uVFlQRV9CTEVfSEVBRFNFVAogICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgIGlmIChzY28gIT0gbnVsbCAmJiBhdWRpb01hbmFnZXIuc2V0Q29tbXVuaWNhdGlvbkRldmljZShzY28pKSB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICBjdXJyZW50Um91dGVkRGV2aWNlID0gc2NvCiAgICAgICAgICAgICAgICAgICAgICAgICAgICBfcm91dGluZ1N0YXRlLnZhbHVlID0gUm91dGluZ1N0YXRlLkFjdGl2ZShkZXZpY2VOYW1lKQogICAgICAgICAgICAgICAgICAgICAgICAgICAgTG9nZ2VyLmkoIuKckyBIRlAvU0NPIHJvdXRpbmcgYWN0aXZlOiAkZGV2aWNlTmFtZSIpCiAgICAgICAgICAgICAgICAgICAgICAgIH0gZWxzZSB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICBfcm91dGluZ1N0YXRlLnZhbHVlID0gUm91dGluZ1N0YXRlLkZhaWxlZCgiQmx1ZXRvb3RoIEhGUC9TQ08gZGV2aWNlIGRpZCBub3QgYmVjb21lIGF2YWlsYWJsZSIpCiAgICAgICAgICAgICAgICAgICAgICAgICAgICBMb2dnZXIudygiTm8gQmx1ZXRvb3RoIFNDTyBkZXZpY2UgYXBwZWFyZWQgYWZ0ZXIgcmVxdWVzdGluZyBTQ08iKQogICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgfSBjYXRjaCAoZTogRXhjZXB0aW9uKSB7CiAgICAgICAgICAgICAgICAgICAgICAgIF9yb3V0aW5nU3RhdGUudmFsdWUgPSBSb3V0aW5nU3RhdGUuRmFpbGVkKGUubWVzc2FnZSA/OiAiVW5rbm93biBIRlAgZXJyb3IiKQogICAgICAgICAgICAgICAgICAgICAgICBMb2dnZXIuZSgi4pyXIEV4Y2VwdGlvbiB3aGlsZSBhY3RpdmF0aW5nIEhGUC9TQ08iLCBlKQogICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgIH0sIDE1MDBMKQogICAgICAgICAgICAgICAgcmV0dXJuIFJvdXRpbmdTdGF0ZS5Sb3V0aW5nKGRldmljZU5hbWUpCiAgICAgICAgICAgIH0KCiAgICAgICAgICAgIHZhbCBzdWNjZXNzID0gYXVkaW9NYW5hZ2VyLnNldENvbW11bmljYXRpb25EZXZpY2UoZGV2aWNlKQonJycKaWYgbWFya2VyIGluIHM6CiAgICBzID0gcy5yZXBsYWNlKG1hcmtlciwgcmVwbGFjZW1lbnQpCmF1ZGlvLndyaXRlX3RleHQocykKcHJpbnQoInBhdGNoIGNvbXBsZXRlIikK' | base64 -d | python3
 
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -e
-          gradle --no-daemon --stacktrace assembleDebug
+        run: gradle --no-daemon --stacktrace assembleDebug
 
-      - name: Locate APK
-        shell: bash
+      - name: Locate and upload APK
         run: |
           set -e
           APK=$(find "$PROJECT_DIR/app" -type f -name "*.apk" | head -n 1)
           test -n "$APK"
-          echo "APK found: $APK"
-          cp "$APK" "$GITHUB_WORKSPACE/HFP-MusicPlayer.apk"
+          cp "$APK" HFP-MusicPlayer.apk
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: HFP-MusicPlayer-APK
           path: HFP-MusicPlayer.apk
