@@ -91,6 +91,16 @@ jobs:
               if imp not in text:
                   text = text.replace(anchor, anchor + imp + "\n", 1)
 
+          new_perm = '''    // Android 12+ Bluetooth permissions.
+          var bluetoothPermissionGranted by remember {
+              mutableStateOf(
+                  Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                      (context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
+                          android.content.pm.PackageManager.PERMISSION_GRANTED &&
+                       context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
+                          android.content.pm.PackageManager.PERMISSION_GRANTED)
+              )
+          }'''
           p0 = text.index("    // Bluetooth permission state")
           p1 = text.index("    // Notification permission state", p0)
           text = text[:p0] + new_perm + "\n\n" + text[p1:]
