@@ -1,6 +1,8 @@
 name: Build HFP Music Player APK
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -41,6 +43,13 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+
+      - name: Diagnose Kotlin sources
+        run: |
+          echo "=== MainActivity.kt around line 70-100 ==="
+          nl -ba "$PROJECT_DIR/app/src/main/java/com/btmicfix/MainActivity.kt" | sed -n '70,100p'
+          echo "=== HomeScreen declarations ==="
+          grep -R -n -E 'fun HomeScreen|hfpMusicPlayer|HfpMusicPlayer' "$PROJECT_DIR/app/src/main/java" || true
 
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
