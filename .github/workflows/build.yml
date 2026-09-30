@@ -54,8 +54,20 @@ jobs:
         run: |
           gradle --no-daemon assembleDebug
 
+      - name: Locate APK
+        run: |
+          APK=$(find "$PROJECT_DIR/app/build" -type f -name "*.apk" | head -n 1)
+          if [ -z "$APK" ]; then
+            echo "No APK found"
+            find "$PROJECT_DIR/app/build" -type f | head -n 100
+            exit 1
+          fi
+          echo "APK found: $APK"
+          cp "$APK" "$GITHUB_WORKSPACE/HFP-MusicPlayer.apk"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: HFP-MusicPlayer-APK
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          path: HFP-MusicPlayer.apk
+          if-no-files-found: error
