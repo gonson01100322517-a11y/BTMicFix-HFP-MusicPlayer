@@ -331,6 +331,8 @@ jobs:
                 }
             }
 
+          '''
+          text = text[:start] + replacement + text[end:]
           setup.write_text(text)
           print("FINAL BLUETOOTH PATCH APPLIED")
           PY
