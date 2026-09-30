@@ -334,6 +334,98 @@ jobs:
           sed -i '/hfpMusicPlayer = hfpMusicPlayer,/d' "$PROJECT_DIR/app/src/main/java/com/btmicfix/MainActivity.kt"
           perl -0pi -e 's/(HomeScreen\(\s*audioRoutingManager = audioRoutingManager,)/$1\n                            hfpMusicPlayer = hfpMusicPlayer,/s' "$PROJECT_DIR/app/src/main/java/com/btmicfix/MainActivity.kt"
           sed -i 's/(outputDevices.asList() + commDevices.asList())/(outputDevices.toList() + commDevices)/' "$PROJECT_DIR/app/src/main/java/com/btmicfix/audio/AudioRoutingManager.kt"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, re
+
+          root = Path(os.environ["PROJECT_DIR"])
+          manifest = root / "app/src/main/AndroidManifest.xml"
+          ms = manifest.read_text()
+          perm = '    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />'
+          if perm not in ms:
+              ms = ms.replace("<application", perm + "\n\n    <application", 1)
+          manifest.write_text(ms)
+
+          routing = root / "app/src/main/java/com/btmicfix/audio/AudioRoutingManager.kt"
+          text = routing.read_text()
+
+          imports = [
+              "import android.media.AudioDeviceInfo",
+              "import android.media.AudioManager",
+              "import android.os.Build",
+          ]
+          anchor = "import android.media.AudioManager"
+          for imp in imports:
+              if imp not in text:
+                  text = text.replace(anchor, imp + "\n" + anchor, 1) if anchor in text else text
+
+          # Add a real, device-specific HFP routing method. The old implementation
+          # only checked/selected an output and could never bind routing to the
+          # device the user selected.
+          method = r'''
+              fun routeToBluetoothDevice(device: android.bluetooth.BluetoothDevice): Boolean {
+                  val manager = context.getSystemService(AudioManager::class.java) ?: return false
+
+                  return try {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                          val target = manager.availableCommunicationDevices.firstOrNull {
+                              it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO &&
+                                  it.address.isNotBlank() &&
+                                  it.address.equals(device.address, ignoreCase = true)
+                          } ?: manager.availableCommunicationDevices.firstOrNull {
+                              it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                          }
+
+                          if (target != null) {
+                              manager.mode = AudioManager.MODE_IN_COMMUNICATION
+                              manager.isMicrophoneMute = false
+                              manager.setCommunicationDevice(target)
+                          } else {
+                              manager.mode = AudioManager.MODE_IN_COMMUNICATION
+                              @Suppress("DEPRECATION")
+                              manager.startBluetoothSco()
+                              @Suppress("DEPRECATION")
+                              manager.isBluetoothScoOn = true
+                          }
+
+                          true
+                      } else {
+                          @Suppress("DEPRECATION")
+                          manager.mode = AudioManager.MODE_IN_COMMUNICATION
+                          @Suppress("DEPRECATION")
+                          manager.startBluetoothSco()
+                          @Suppress("DEPRECATION")
+                          manager.isBluetoothScoOn = true
+                          true
+                      }
+                  } catch (_: SecurityException) {
+                      false
+                  } catch (_: Exception) {
+                      false
+                  }
+              }
+
+          '''
+          if "fun routeToBluetoothDevice(" not in text:
+              class_end = text.rfind("\n}")
+              if class_end < 0:
+                  raise SystemExit("AudioRoutingManager class end not found")
+              text = text[:class_end] + method + text[class_end:]
+
+          routing.write_text(text)
+
+          # Make the UI pass the ACTUAL selected BluetoothDevice to the routing layer.
+          setup = root / "app/src/main/java/com/btmicfix/ui/screens/SetupScreen.kt"
+          st = setup.read_text()
+          old_call = "audioRoutingManager.routeToFirstAvailableBluetooth()"
+          new_call = "audioRoutingManager.routeToBluetoothDevice(device)"
+          if old_call in st:
+              st = st.replace(old_call, new_call, 1)
+          setup.write_text(st)
+
+          print("REAL DEVICE-SPECIFIC HFP ROUTING PATCH APPLIED")
+          PY
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: gradle --no-daemon --stacktrace assembleDebug
