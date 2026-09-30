@@ -125,7 +125,7 @@ jobs:
             }
 
         _availableDevices.value = btDevices
-        Logger.d("Available BT devices: \${btDevices.map { "\${it.name} (\${it.typeLabel})" }}")
+        Logger.d("Available BT devices: ${btDevices.map { "${it.name} (${it.typeLabel})" }}")
     }
 '''
           s = s[:start] + new_refresh + s[end:]
@@ -185,7 +185,7 @@ jobs:
           grep -n "getDevices\|availableCommunicationDevices\|startBluetoothSco\|setCommunicationDevice" "$PROJECT_DIR/app/src/main/java/com/btmicfix/audio/AudioRoutingManager.kt"
 
       - name: Build APK
-        working-directory: \${{ env.PROJECT_DIR }}
+        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
         run: |
           set -e
