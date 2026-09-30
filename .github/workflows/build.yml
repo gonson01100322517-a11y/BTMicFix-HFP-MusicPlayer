@@ -47,8 +47,7 @@ jobs:
         run: |
           set -e
           # Current ZIP: HomeScreen expects hfpMusicPlayer; SetupScreen does not.
-          sed -i '/hfpMusicPlayer = hfpMusicPlayer,/d' "$PROJECT_DIR/app/src/main/java/com/btmicfix/MainActivity.kt"
-          sed -i '0,/audioRoutingManager = audioRoutingManager,/s//audioRoutingManager = audioRoutingManager,\\n                            hfpMusicPlayer = hfpMusicPlayer,/' "$PROJECT_DIR/app/src/main/java/com/btmicfix/MainActivity.kt"
+          python3 -c 'from pathlib import Path; p=Path("'"$PROJECT_DIR"'/app/src/main/java/com/btmicfix/MainActivity.kt"); s=p.read_text(); s=s.replace("hfpMusicPlayer = hfpMusicPlayer,\\n",""); s=s.replace("hfpMusicPlayer = hfpMusicPlayer,",""); needle="HomeScreen(\\n"; pos=s.find(needle); pos=s.find("audioRoutingManager = audioRoutingManager,",pos); pos=pos+len("audioRoutingManager = audioRoutingManager,"); s=s[:pos]+"\\n                            hfpMusicPlayer = hfpMusicPlayer,"+s[pos:]; p.write_text(s)'
           sed -i 's/(outputDevices.asList() + commDevices.asList())/(outputDevices.toList() + commDevices)/' "$PROJECT_DIR/app/src/main/java/com/btmicfix/audio/AudioRoutingManager.kt"
 
       - name: Build APK
