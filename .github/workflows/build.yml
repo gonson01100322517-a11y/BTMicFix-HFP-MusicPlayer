@@ -46,25 +46,9 @@ jobs:
 
       - name: Patch Kotlin source
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import os
-          p = Path(os.environ["PROJECT_DIR"]) / "app/src/main/java/com/btmicfix/MainActivity.kt"
-          s = p.read_text()
-          old = """                        SetupScreen(
-                            audioRoutingManager = audioRoutingManager,
-                            hfpMusicPlayer = hfpMusicPlayer,
-                            shizukuManager = shizukuManager,"""
-          new = """                        SetupScreen(
-                            audioRoutingManager = audioRoutingManager,
-                            shizukuManager = shizukuManager,"""
-          if old not in s:
-              raise SystemExit("Expected SetupScreen block was not found")
-          p.write_text(s.replace(old, new, 1))
-          PY
+          sed -i '82,90{/hfpMusicPlayer = hfpMusicPlayer,/d;}' "$PROJECT_DIR/app/src/main/java/com/btmicfix/MainActivity.kt"
           echo "=== Patched SetupScreen call ==="
           nl -ba "$PROJECT_DIR/app/src/main/java/com/btmicfix/MainActivity.kt" | sed -n '72,92p'
-
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
