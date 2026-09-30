@@ -58,7 +58,7 @@ jobs:
           if 'android.permission.BLUETOOTH_SCAN' not in s:
               s = s.replace(
                   '<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />',
-                  '<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />\\n'
+                  '<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />\n'
                   '    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />'
               )
           manifest.write_text(s)
@@ -72,8 +72,8 @@ jobs:
 
           if 'import android.os.Handler' not in a:
               a = a.replace(
-                  'import android.media.AudioManager\\n',
-                  'import android.media.AudioManager\\nimport android.os.Handler\\nimport android.os.Looper\\n'
+                  'import android.media.AudioManager\n',
+                  'import android.media.AudioManager\nimport android.os.Handler\nimport android.os.Looper\n'
               )
 
           old_refresh = '''        val commDevices = audioManager.availableCommunicationDevices
@@ -169,7 +169,7 @@ jobs:
           # Keep the earlier compile fix.
           main = root / "app/src/main/java/com/btmicfix/MainActivity.kt"
           m = main.read_text()
-          m = m.replace('                            hfpMusicPlayer = hfpMusicPlayer,\\n', '')
+          m = m.replace('                            hfpMusicPlayer = hfpMusicPlayer,\n', '')
           main.write_text(m)
 
           print("=== Manifest Bluetooth permissions ===")
