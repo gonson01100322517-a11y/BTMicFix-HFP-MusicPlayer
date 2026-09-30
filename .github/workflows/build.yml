@@ -48,7 +48,8 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p = Path("$PROJECT_DIR/app/src/main/java/com/btmicfix/MainActivity.kt")
+          import os
+          p = Path(os.environ["PROJECT_DIR"]) / "app/src/main/java/com/btmicfix/MainActivity.kt"
           s = p.read_text()
           old = """                        SetupScreen(
                             audioRoutingManager = audioRoutingManager,
