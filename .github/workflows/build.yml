@@ -163,13 +163,10 @@ jobs:
               1
           )
 
-          pattern = re.compile(
-              r'            // Step 4: Pair Earbuds via CDM\n'
-              r'            SetupStepCard\(.*?\n'
-              r'            \)\n\n'
-              r'            // Step 5: Test Routing',
-              re.S
-          )
+          start_marker = "            // Step 4: Pair Earbuds via CDM"
+          end_marker = "            // Step 5: Test Routing"
+          start = text.index(start_marker)
+          end = text.index(end_marker, start)
           replacement = r'''            // Step 4: Direct Bluetooth Classic scanner.
             // This intentionally does NOT use CompanionDeviceManager.
             val bluetoothManager = remember(context) {
@@ -334,10 +331,6 @@ jobs:
                 }
             }
 
-            // Step 5: Test Routing'''
-          if not pattern.search(text):
-              raise SystemExit("CDM pairing card block not found")
-          text = pattern.sub(replacement, text, count=1)
           setup.write_text(text)
           print("FINAL BLUETOOTH PATCH APPLIED")
           PY
