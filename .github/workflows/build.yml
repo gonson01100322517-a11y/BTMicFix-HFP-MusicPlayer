@@ -179,6 +179,13 @@ jobs:
           print("=== Audio manager Bluetooth logic patched ===")
           print("=== MainActivity compile fix retained ===")
           PY
+      - name: Validate patched source
+        run: |
+          echo "=== Bluetooth permission lines ==="
+          grep -n "BLUETOOTH_" "$PROJECT_DIR/app/src/main/AndroidManifest.xml" || true
+          echo "=== Device discovery code ==="
+          grep -n "getDevices\|availableCommunicationDevices\|startBluetoothSco" "$PROJECT_DIR/app/src/main/java/com/btmicfix/audio/AudioRoutingManager.kt" || true
+
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
